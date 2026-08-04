@@ -1,14 +1,14 @@
 ########
 # BASE
 ########
-FROM node:18-alpine as base
+FROM node:24-alpine AS base
 
 WORKDIR /usr/app
 
 ########
 # BUILD
 ########
-FROM base as build
+FROM base AS build
 
 # Copy all jsons
 COPY package*.json tsconfig.json ./
@@ -24,7 +24,7 @@ RUN npm run build
 ########
 # DEPLOY
 ########
-FROM base as deploy
+FROM base AS deploy
 
 RUN apk add --no-cache \
     jq \

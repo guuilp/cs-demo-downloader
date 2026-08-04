@@ -1,6 +1,6 @@
 {
   "name": "cs-demo-downloader",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Automatically download Counter-Strike demos of ranked, unranked, and wingman matches",
   "main": "dist/index.js",
   "type": "module",
@@ -25,7 +25,7 @@
     "pino-pretty": "^10.2.3",
     "steam-session": "^1.7.1",
     "steam-totp": "^2.1.2",
-    "steam-user": "^5.0.4",
+    "steam-user": "^5.3.0",
     "unbzip2-stream": "^1.4.3"
   },
   "devDependencies": {
@@ -53,6 +53,9 @@
     "typescript": "^5.3.2"
   },
   "overrides": {
-    "tsconfig-paths": "^4.0.0"
+    "steam-user": {
+      "steam-appticket": "^2.0.0",
+      "adm-zip": "^0.6.0"
+    }
   }
 }
