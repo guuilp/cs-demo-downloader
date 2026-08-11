@@ -56,6 +56,9 @@ export const downloadSaveDemo = async (match: DownloadableMatch): Promise<bigint
           responseType: 'stream',
           timeout: 120000, // PATCH: antes não tinha timeout (default 0 = infinito)
           maxRedirects: 5,
+          family: 4, // PATCH: força IPv4 — a VPN não tem IPv6 e o Happy Eyeballs
+          // do Node/axios tenta IPv6 primeiro (ENETUNREACH) e o connect IPv4
+          // acaba dando timeout na seleção. wget baixa OK; axios falhava.
         });
         L.trace({ url: match.url }, 'Demo download complete');
         await pipeline(resp.data, bz2(), fs.createWriteStream(tempFilename, 'binary'));
