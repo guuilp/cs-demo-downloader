@@ -7,6 +7,7 @@ export interface Store {
   lastContinueToken: Record<string, string>;
   refreshToken: Record<string, string>;
   lastShareCode: Record<string, string>;
+  pendingShareCodes: Record<string, string[]>;
 }
 
 const configDir = process.env['CONFIG_DIR'] || 'config';
@@ -21,7 +22,7 @@ export const readStore = async (): Promise<Store> => {
   } catch (err) {
     L.warn({ err }, 'Error reading store JSON');
   }
-  return { lastCodeDemoId: {}, lastContinueToken: {}, refreshToken: {}, lastShareCode: {} };
+  return { lastCodeDemoId: {}, lastContinueToken: {}, refreshToken: {}, lastShareCode: {}, pendingShareCodes: {} };
 };
 
 export const getStoreValue = async (
@@ -29,7 +30,17 @@ export const getStoreValue = async (
   accountName: string,
 ): Promise<string | undefined> => {
   const store = await readStore();
-  return store[type]?.[accountName];
+  return store[type]?.[accountName] as string | undefined;
+};
+
+// PATCH (cache de share codes): leitura de valores em array (pendingShareCodes).
+export const getStoreArrayValue = async (
+  type: keyof Store,
+  accountName: string,
+): Promise<string[] | undefined> => {
+  const store = await readStore();
+  const value = store[type]?.[accountName];
+  return Array.isArray(value) ? (value as string[]) : undefined;
 };
 
 export const setStore = (store: Store): Promise<void> => {
@@ -44,8 +55,23 @@ export const setStoreValue = async (
   L.trace({ type, accountName, value }, 'Setting store value');
   const store = await readStore();
   if (!store[type]) {
-    store[type] = {};
+    (store[type] as Record<string, string>) = {};
   }
-  store[type][accountName] = value;
+  (store[type] as Record<string, string>)[accountName] = value;
+  return setStore(store);
+};
+
+// PATCH (cache de share codes): escrita de valores em array (pendingShareCodes).
+export const setStoreArrayValue = async (
+  type: keyof Store,
+  accountName: string,
+  value: string[],
+): Promise<void> => {
+  L.trace({ type, accountName, value }, 'Setting store array value');
+  const store = await readStore();
+  if (!store[type]) {
+    (store[type] as Record<string, string[]>) = {};
+  }
+  (store[type] as Record<string, string[]>)[accountName] = value;
   return setStore(store);
 };

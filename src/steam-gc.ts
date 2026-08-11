@@ -6,7 +6,7 @@ import { config, type AuthCodeUser } from './config.js';
 import logger from './logger.js';
 import { loginSteamClient } from './steam.js';
 import { getAllNewMatchCodes } from './match-history.js';
-import { getStoreValue, setStoreValue } from './store.js';
+import { getStoreValue, setStoreValue, getStoreArrayValue, setStoreArrayValue } from './store.js';
 import { DownloadableMatch, downloadSaveDemo } from './download.js';
 import { appendDemoLog } from './demo-log.js';
 
@@ -30,6 +30,20 @@ export const getUserShareCodes = async (
   const { steamId64, authCode } = user;
   const L = logger.child({ steamId: steamId64 });
   try {
+    // PATCH (cache de share codes): se já temos códigos cacheados deste
+    // usuário (de um run anterior que não completou os downloads), usa-os
+    // direto — evita re-fazer o API loop inteiro (centenas de calls) num
+    // restart. O cache só é limpo quando um download é concluído (ver
+    // getAllUsersMatches → setStoreValue('pendingShareCodes', ..., [])).
+    const cachedCodes = await getStoreArrayValue('pendingShareCodes', steamId64);
+    if (Array.isArray(cachedCodes) && cachedCodes.length > 0) {
+      L.info({ count: cachedCodes.length }, 'Using cached share codes (skip API loop)');
+      return cachedCodes.map((shareCode) => {
+        const { matchId } = decodeMatchShareCode(shareCode);
+        return { shareCode, steamId: steamId64, matchId };
+      });
+    }
+
     const storeShareCode = await getStoreValue('lastShareCode', steamId64);
     const lastShareCode = storeShareCode ?? user.oldestShareCode;
     if (!lastShareCode) throw new Error('No share code found');
@@ -42,6 +56,12 @@ export const getUserShareCodes = async (
     );
     if (!storeShareCode) {
       shareCodes.unshift(lastShareCode);
+    }
+    // PATCH (cache): persiste os códigos fetados pra que um restart não
+    // refaça o API loop inteiro. Só é limpo quando os downloads avançarem.
+    if (shareCodes.length > 0) {
+      await setStoreArrayValue('pendingShareCodes', steamId64, shareCodes);
+      L.info({ count: shareCodes.length }, 'Cached share codes for next run');
     }
     return shareCodes.map((shareCode) => {
       const { matchId } = decodeMatchShareCode(shareCode);
@@ -200,12 +220,17 @@ export const getAllUsersMatches = async (
         }
         return true;
       }, undefined);
-      if (lastWorkingIdentifier)
+      if (lastWorkingIdentifier) {
         await setStoreValue(
           'lastShareCode',
           lastWorkingIdentifier.steamId,
           lastWorkingIdentifier.shareCode,
         );
+        // PATCH (cache): avançou o lastShareCode deste usuário → esvazia o
+        // cache de share codes dele. Próximo run busca só códigos NOVOS
+        // (após o lastShareCode), em vez de refazer o loop do zero.
+        await setStoreArrayValue('pendingShareCodes', lastWorkingIdentifier.steamId, []);
+      }
     }),
   );
 };
