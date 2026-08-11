@@ -47,12 +47,14 @@ const main = async () => {
   logger.debug({ config }, 'Starting cs-demo-downloader');
   const gcpdQueue = new PQueue({ concurrency: 1, throwOnTimeout: true });
   // PATCH (throttle CDN): concurrency 5 disparava burst de downloads simultâneos
-  // que o CDN da Valve (GCS) throttlava com ETIMEDOUT. Agora 1 download por vez,
-  // com intervalo mínimo de 5s entre cada um (intervalCap=1 limita a 1 por janela).
+  // que o CDN da Valve (GCS) throttlava com ETIMEDOUT. Inicialmente 1 download
+  // por vez com intervalo 5s. Após os fixes de IPv4 (family: 4) + VPN NL, a rede
+  // ficou estável, então aumentamos o paralelismo pra 4 downloads simultâneos
+  // com intervalo 2s (intervalCap=4) pra acelerar o backfill sem voltar ao burst.
   const downloadQueue = new PQueue({
-    concurrency: 1,
-    interval: 5000,
-    intervalCap: 1,
+    concurrency: 4,
+    interval: 2000,
+    intervalCap: 4,
     throwOnTimeout: true,
   });
 
