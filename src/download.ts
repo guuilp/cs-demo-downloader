@@ -71,12 +71,21 @@ export const downloadSaveDemo = async (match: DownloadableMatch): Promise<bigint
       }
       return null;
     } catch (err) {
-      if (attempt >= MAX_ATTEMPTS) {
-        L.error({ err, match }, `Error downloading GCPD demo (attempt ${attempt}/${MAX_ATTEMPTS})`);
+      // PATCH (502/permanentes): só re-tenta erros de REDE (sem resposta HTTP:
+      // ETIMEDOUT, ECONN*, ENETUNREACH, etc.). Erros HTTP permanentes
+      // (ex: 502 — demo expirada do replay server da Valve) NÃO são
+      // retryáveis: o servidor respondeu e o resultado não muda. Retryar
+      // 502 só fazia o downloader gastar ~15s/demo em demos mortas do backfill.
+      const hasHttpResponse = (err as { response?: unknown }).response !== undefined;
+      if (hasHttpResponse || attempt >= MAX_ATTEMPTS) {
+        L.error(
+          { err, match },
+          `Error downloading GCPD demo (attempt ${attempt}/${MAX_ATTEMPTS}, retryable=${!hasHttpResponse})`,
+        );
         return match.matchId;
       }
       const delayMs = 5000 * attempt;
-      L.warn({ err, match, attempt, delayMs }, `Download failed, retrying in ${delayMs}ms`);
+      L.warn({ err, match, attempt, delayMs }, `Network error, retrying in ${delayMs}ms`);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
