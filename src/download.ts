@@ -35,31 +35,47 @@ export const gcpdUrlToFilename = (url: string, suffix?: string): string => {
  * @returns matchId if match failed
  */
 export const downloadSaveDemo = async (match: DownloadableMatch): Promise<bigint | null> => {
-  try {
-    if (!match.url) throw new Error('Match download URL missing');
+  // PATCH (throttle CDN): retry com backoff exponencial. O CDN da Valve
+  // throttla com ETIMEDOUT quando recebe muitos requests em rajada; com
+  // timeout de 120s + retries espaçados, um download falho tem 2ª/3ª chance.
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      if (!match.url) throw new Error('Match download URL missing');
 
-    await fsx.mkdirp(tempDemosDir);
-    const tempFilename = path.join(tempDemosDir, gcpdUrlToFilename(match.url, match.type));
+      await fsx.mkdirp(tempDemosDir);
+      const tempFilename = path.join(tempDemosDir, gcpdUrlToFilename(match.url, match.type));
 
-    await fsx.mkdirp(demosDir); // redundant, but added in-case the temp directory is changed in the future to not be nested within the demos directory
-    const completedFilename = path.join(demosDir, gcpdUrlToFilename(match.url, match.type));
+      await fsx.mkdirp(demosDir); // redundant, but added in-case the temp directory is changed in the future to not be nested within the demos directory
+      const completedFilename = path.join(demosDir, gcpdUrlToFilename(match.url, match.type));
 
-    const exists = await fsx.exists(completedFilename);
-    if (!exists) {
-      L.trace({ url: match.url }, 'Downloading demo');
-      const resp = await axios.get<stream.Duplex>(match.url, { responseType: 'stream' });
-      L.trace({ url: match.url }, 'Demo download complete');
-      await pipeline(resp.data, bz2(), fs.createWriteStream(tempFilename, 'binary'));
-      L.trace({ filename: tempFilename }, 'Demo saved to file');
-      await fsp.rename(tempFilename, completedFilename);
-      await fsp.utimes(completedFilename, match.date, match.date);
-      L.info({ filename: completedFilename, date: match.date }, 'Demo save complete');
-    } else {
-      L.info({ filename: completedFilename }, 'File already exists, skipping download');
+      const exists = await fsx.exists(completedFilename);
+      if (!exists) {
+        L.trace({ url: match.url, attempt }, 'Downloading demo');
+        const resp = await axios.get<stream.Duplex>(match.url, {
+          responseType: 'stream',
+          timeout: 120000, // PATCH: antes não tinha timeout (default 0 = infinito)
+          maxRedirects: 5,
+        });
+        L.trace({ url: match.url }, 'Demo download complete');
+        await pipeline(resp.data, bz2(), fs.createWriteStream(tempFilename, 'binary'));
+        L.trace({ filename: tempFilename }, 'Demo saved to file');
+        await fsp.rename(tempFilename, completedFilename);
+        await fsp.utimes(completedFilename, match.date, match.date);
+        L.info({ filename: completedFilename, date: match.date }, 'Demo save complete');
+      } else {
+        L.info({ filename: completedFilename }, 'File already exists, skipping download');
+      }
+      return null;
+    } catch (err) {
+      if (attempt >= MAX_ATTEMPTS) {
+        L.error({ err, match }, `Error downloading GCPD demo (attempt ${attempt}/${MAX_ATTEMPTS})`);
+        return match.matchId;
+      }
+      const delayMs = 5000 * attempt;
+      L.warn({ err, match, attempt, delayMs }, `Download failed, retrying in ${delayMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    return null;
-  } catch (err) {
-    L.error({ err, match }, 'Error downloading GCPD demo');
-    return match.matchId;
   }
+  return null; // unreachable, satisfies TS control flow
 };

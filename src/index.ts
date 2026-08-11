@@ -46,7 +46,15 @@ const handleGcpdUser = async (user: LoginCredential, gcpdQueue: PQueue, download
 const main = async () => {
   logger.debug({ config }, 'Starting cs-demo-downloader');
   const gcpdQueue = new PQueue({ concurrency: 1, throwOnTimeout: true });
-  const downloadQueue = new PQueue({ concurrency: 5, throwOnTimeout: true });
+  // PATCH (throttle CDN): concurrency 5 disparava burst de downloads simultâneos
+  // que o CDN da Valve (GCS) throttlava com ETIMEDOUT. Agora 1 download por vez,
+  // com intervalo mínimo de 5s entre cada um (intervalCap=1 limita a 1 por janela).
+  const downloadQueue = new PQueue({
+    concurrency: 1,
+    interval: 5000,
+    intervalCap: 1,
+    throwOnTimeout: true,
+  });
 
   if (config.gcpdLogins?.length) {
     await Promise.all(
