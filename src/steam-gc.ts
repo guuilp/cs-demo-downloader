@@ -197,44 +197,66 @@ export const getAllUsersMatches = async (
     };
   });
 
-  // Download the demos (await to completion; results no longer gate lastShareCode)
+  // PATCH (checkpoint por usuário): dlMatches é deduplicado entre usuários
+  // (demo compartilhada baixada 1x). Para não perder progresso se o processo
+  // quebrar no meio dos downloads (que levam horas), mapeamos cada matchId aos
+  // jogadores donos e gravamos o lastShareCode de cada usuário ASSIM QUE todos
+  // os demos dele forem tentados — em vez de só no fim de tudo.
+  const matchOwners = new Map<string, Set<string>>(); // matchId -> steamIds
+  const userLastResolved = new Map<string, MatchIdentifier>(); // steamId -> último processado
+  const userPending = new Map<string, number>(); // steamId -> demos restantes
+
+  usersShareCodeIds.forEach((userShareCodeIds) => {
+    let lastProcessed: MatchIdentifier | undefined;
+    userShareCodeIds.forEach((matchIdentifier) => {
+      if (resolvedMatches.some((match) => match.matchid === matchIdentifier.matchId.toString())) {
+        lastProcessed = matchIdentifier;
+        const key = matchIdentifier.matchId.toString();
+        if (!matchOwners.has(key)) {
+          matchOwners.set(key, new Set());
+        }
+        matchOwners.get(key)?.add(matchIdentifier.steamId);
+        userPending.set(
+          matchIdentifier.steamId,
+          (userPending.get(matchIdentifier.steamId) || 0) + 1,
+        );
+      }
+    });
+    if (lastProcessed) {
+      userLastResolved.set(lastProcessed.steamId, lastProcessed);
+    }
+  });
+
+  // Download the demos. Após cada download, faz checkpoint dos usuários donos
+  // cujo pending zera — escreve lastShareCode + esvazia cache na hora.
   await appendDemoLog(dlMatches);
   await Promise.all(
     dlMatches.map((match) =>
-      downloadQueue.add(() => downloadSaveDemo(match), { throwOnTimeout: true }),
+      downloadQueue.add(
+        async () => {
+          await downloadSaveDemo(match);
+          const owners = matchOwners.get(match.matchId.toString());
+          if (!owners) {
+            return;
+          }
+          owners.forEach(async (steamId) => {
+            const remaining = (userPending.get(steamId) || 1) - 1;
+            userPending.set(steamId, remaining);
+            if (remaining <= 0) {
+              const last = userLastResolved.get(steamId);
+              if (last) {
+                await setStoreValue('lastShareCode', last.steamId, last.shareCode);
+                await setStoreArrayValue('pendingShareCodes', last.steamId, []);
+                logger.info(
+                  { steamId, shareCode: last.shareCode },
+                  'Checkpoint: lastShareCode saved for user',
+                );
+              }
+            }
+          });
+        },
+        { throwOnTimeout: true },
+      ),
     ),
-  );
-
-  // Use each user's MatchIdentifiers to set the last working shareCode in the store
-  await Promise.all(
-    usersShareCodeIds.map(async (userShareCodeIds): Promise<void> => {
-      // PATCH (progresso com falhas parciais): o loop original usava `.some()`
-      // que PARAVA na primeira falha — se o cache começava com um code expirado
-      // (ex: demo antiga que dá 502), o lastShareCode nunca era gravado e o
-      // downloader re-processava o cache do zero em todo restart.
-      //
-      // Agora percorre TODOS os codes do usuário e grava o lastShareCode até o
-      // ÚLTIMO que foi processado (metadata resolvida pelo GC), mesmo que o
-      // download tenha falhado. Códigos já processados (incluindo demos
-      // expiradas que nunca vão baixar) são pulados — o próximo run busca só
-      // códigos NOVOS após o lastShareCode.
-      let lastProcessedIdentifier: MatchIdentifier | undefined;
-      userShareCodeIds.forEach((matchIdentifier) => {
-        if (resolvedMatches.some((match) => match.matchid === matchIdentifier.matchId.toString())) {
-          lastProcessedIdentifier = matchIdentifier;
-        }
-      });
-      if (lastProcessedIdentifier) {
-        await setStoreValue(
-          'lastShareCode',
-          lastProcessedIdentifier.steamId,
-          lastProcessedIdentifier.shareCode,
-        );
-        // PATCH (cache): avançou o lastShareCode deste usuário → esvazia o
-        // cache de share codes dele. Próximo run busca só códigos NOVOS
-        // (após o lastShareCode), em vez de refazer o loop do zero.
-        await setStoreArrayValue('pendingShareCodes', lastProcessedIdentifier.steamId, []);
-      }
-    }),
   );
 };
