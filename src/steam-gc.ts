@@ -209,27 +209,34 @@ export const getAllUsersMatches = async (
   // Use each user's MatchIdentifiers to set the last working shareCode in the store
   await Promise.all(
     usersShareCodeIds.map(async (userShareCodeIds): Promise<void> => {
-      let lastWorkingIdentifier: MatchIdentifier | undefined;
-      userShareCodeIds.some((matchIdentifier) => {
+      // PATCH (progresso com falhas parciais): o loop original usava `.some()`
+      // que PARAVA na primeira falha — se o cache começava com um code expirado
+      // (ex: demo antiga que dá 502), o lastShareCode nunca era gravado e o
+      // downloader re-processava o cache do zero em todo restart.
+      //
+      // Agora percorre TODOS os codes do usuário e grava o lastShareCode até o
+      // ÚLTIMO que foi processado (metadata resolvida pelo GC), mesmo que o
+      // download tenha falhado. Códigos já processados (incluindo demos
+      // expiradas que nunca vão baixar) são pulados — o próximo run busca só
+      // códigos NOVOS após o lastShareCode.
+      let lastProcessedIdentifier: MatchIdentifier | undefined;
+      for (const matchIdentifier of userShareCodeIds) {
         if (
-          resolvedMatches.some((match) => match.matchid === matchIdentifier.matchId.toString()) &&
-          !failedDownloads.includes(matchIdentifier.matchId)
+          resolvedMatches.some((match) => match.matchid === matchIdentifier.matchId.toString())
         ) {
-          lastWorkingIdentifier = matchIdentifier;
-          return false;
+          lastProcessedIdentifier = matchIdentifier;
         }
-        return true;
-      }, undefined);
-      if (lastWorkingIdentifier) {
+      }
+      if (lastProcessedIdentifier) {
         await setStoreValue(
           'lastShareCode',
-          lastWorkingIdentifier.steamId,
-          lastWorkingIdentifier.shareCode,
+          lastProcessedIdentifier.steamId,
+          lastProcessedIdentifier.shareCode,
         );
         // PATCH (cache): avançou o lastShareCode deste usuário → esvazia o
         // cache de share codes dele. Próximo run busca só códigos NOVOS
         // (após o lastShareCode), em vez de refazer o loop do zero.
-        await setStoreArrayValue('pendingShareCodes', lastWorkingIdentifier.steamId, []);
+        await setStoreArrayValue('pendingShareCodes', lastProcessedIdentifier.steamId, []);
       }
     }),
   );
