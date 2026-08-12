@@ -197,14 +197,13 @@ export const getAllUsersMatches = async (
     };
   });
 
-  // Download the demos
+  // Download the demos (await to completion; results no longer gate lastShareCode)
   await appendDemoLog(dlMatches);
-  const downloadResults = await Promise.all(
+  await Promise.all(
     dlMatches.map((match) =>
       downloadQueue.add(() => downloadSaveDemo(match), { throwOnTimeout: true }),
     ),
   );
-  const failedDownloads = downloadResults.filter((id): id is bigint => id !== null).sort();
 
   // Use each user's MatchIdentifiers to set the last working shareCode in the store
   await Promise.all(
@@ -220,13 +219,11 @@ export const getAllUsersMatches = async (
       // expiradas que nunca vão baixar) são pulados — o próximo run busca só
       // códigos NOVOS após o lastShareCode.
       let lastProcessedIdentifier: MatchIdentifier | undefined;
-      for (const matchIdentifier of userShareCodeIds) {
-        if (
-          resolvedMatches.some((match) => match.matchid === matchIdentifier.matchId.toString())
-        ) {
+      userShareCodeIds.forEach((matchIdentifier) => {
+        if (resolvedMatches.some((match) => match.matchid === matchIdentifier.matchId.toString())) {
           lastProcessedIdentifier = matchIdentifier;
         }
-      }
+      });
       if (lastProcessedIdentifier) {
         await setStoreValue(
           'lastShareCode',
