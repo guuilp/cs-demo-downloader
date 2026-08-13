@@ -66,39 +66,55 @@ export const loginSteamClient = async (user: LoginCredential): Promise<SteamUser
     { milliseconds: 30000, message: 'Timed out waiting for Steam logged on' },
   );
 
-  if (refreshToken) {
-    L.trace('Logging into Steam with refresh token');
+  try {
+    if (refreshToken) {
+      L.trace('Logging into Steam with refresh token');
 
-    steamUser.logOn({ refreshToken });
-    // session.renewRefreshToken() // This probably won't work, so we'll just let the refresh token expire
-    await waitForAuthentication;
-  } else {
-    L.trace('Getting Steam Guard auth code');
-    let authCode: string | undefined;
-    if (user.secret) {
+      steamUser.logOn({ refreshToken });
+      // session.renewRefreshToken() // This probably won't work, so we'll just let the refresh token expire
+      await waitForAuthentication;
+    } else {
       L.trace('Getting Steam Guard auth code');
-      authCode = SteamTotp.getAuthCode(user.secret);
+      let authCode: string | undefined;
+      if (user.secret) {
+        L.trace('Getting Steam Guard auth code');
+        authCode = SteamTotp.getAuthCode(user.secret);
+      }
+
+      const waitForRefreshToken = promiseTimeout(
+        new Promise<string>((resolve) => {
+          steamUser.once('refreshToken' as never, (_refreshToken: string) => {
+            resolve(_refreshToken);
+          });
+        }),
+        { milliseconds: 30000, message: 'Timed out waiting for Steam refresh token' },
+      );
+
+      L.debug('Logging into Steam with password');
+      steamUser.logOn({
+        accountName: user.username,
+        password: user.password,
+        twoFactorCode: authCode,
+      });
+      await waitForAuthentication;
+      const newRefreshToken = await waitForRefreshToken;
+      await setStoreValue('refreshToken', user.username, newRefreshToken);
     }
-
-    const waitForRefreshToken = promiseTimeout(
-      new Promise<string>((resolve) => {
-        steamUser.once('refreshToken' as never, (_refreshToken: string) => {
-          resolve(_refreshToken);
-        });
-      }),
-      { milliseconds: 30000, message: 'Timed out waiting for Steam refresh token' },
-    );
-
-    L.debug('Logging into Steam with password');
-    steamUser.logOn({
-      accountName: user.username,
-      password: user.password,
-      twoFactorCode: authCode,
-    });
-    await waitForAuthentication;
-    const newRefreshToken = await waitForRefreshToken;
-    await setStoreValue('refreshToken', user.username, newRefreshToken);
+    L.debug('Steam login successful');
+    return steamUser;
+  } catch (err) {
+    // PATCH (login timeout): se o login expirou (30s) ou falhou, o steamUser
+    // fica com a conexão aberta e segura o processo vivo — o run nunca morre
+    // e o próximo tick do cron fica bloqueado (supercronic não inicia job novo
+    // com o anterior rodando) até o timeout externo (RUN_TIMEOUT_SEC) matar.
+    // logOff() fecha a conexão e deixa o processo sair; o erro é re-lançado
+    // pro caller decidir o retry.
+    L.warn({ err }, 'Steam login failed — closing connection');
+    try {
+      steamUser.logOff();
+    } catch (logoffErr) {
+      L.warn({ err: logoffErr }, 'Error logging off Steam client');
+    }
+    throw err;
   }
-  L.debug('Steam login successful');
-  return steamUser;
 };
