@@ -205,6 +205,9 @@ export const getAllUsersMatches = async (
   const matchOwners = new Map<string, Set<string>>(); // matchId -> steamIds
   const userLastResolved = new Map<string, MatchIdentifier>(); // steamId -> último processado
   const userPending = new Map<string, number>(); // steamId -> demos restantes
+  // PATCH (fix checkpoint): matchIds por usuário — usado pra saber se algum
+  // dos demos do usuário falhou antes de avançar o lastShareCode.
+  const userMatchIds = new Map<string, string[]>(); // steamId -> matchIds
 
   usersShareCodeIds.forEach((userShareCodeIds) => {
     let lastProcessed: MatchIdentifier | undefined;
@@ -220,6 +223,10 @@ export const getAllUsersMatches = async (
           matchIdentifier.steamId,
           (userPending.get(matchIdentifier.steamId) || 0) + 1,
         );
+        userMatchIds.set(matchIdentifier.steamId, [
+          ...(userMatchIds.get(matchIdentifier.steamId) || []),
+          key,
+        ]);
       }
     });
     if (lastProcessed) {
@@ -229,12 +236,28 @@ export const getAllUsersMatches = async (
 
   // Download the demos. Após cada download, faz checkpoint dos usuários donos
   // cujo pending zera — escreve lastShareCode + esvazia cache na hora.
+  // PATCH (fix checkpoint): downloadSaveDemo retorna matchId quando o download
+  // FALHA (não lança). Se ignorarmos o retorno, o lastShareCode avança mesmo
+  // com demo não baixada e o match é perdido pra sempre (a API só anda pra
+  // frente). Agora: falha => mantém pendingShareCodes p/ retry no próximo run
+  // e só avança o checkpoint quando TODOS os demos do usuário baixaram.
+  // Guarda anti-loop: após 3 runs consecutivos com falha, força o checkpoint
+  // com ERROR (demo permanentemente morta, ex: 502 expirada) pra não travar
+  // o pipeline — e o match fica registrado no demo-log.csv p/ recuperação.
+  const failedMatches = new Set<string>(); // matchIds cujo download falhou
   await appendDemoLog(dlMatches);
   await Promise.all(
     dlMatches.map((match) =>
       downloadQueue.add(
         async () => {
-          await downloadSaveDemo(match);
+          const failedMatchId = await downloadSaveDemo(match);
+          if (failedMatchId !== null) {
+            failedMatches.add(failedMatchId.toString());
+            logger.warn(
+              { matchId: failedMatchId.toString(), url: match.url },
+              'Download failed — keeping share code pending for retry',
+            );
+          }
           const owners = matchOwners.get(match.matchId.toString());
           if (!owners) {
             return;
@@ -244,8 +267,35 @@ export const getAllUsersMatches = async (
             userPending.set(steamId, remaining);
             if (remaining <= 0) {
               const last = userLastResolved.get(steamId);
-              if (last) {
+              if (!last) {
+                return;
+              }
+              const ownedIds = userMatchIds.get(steamId) || [];
+              const hasFailed = ownedIds.some((id) => failedMatches.has(id));
+              const retries = Number((await getStoreValue('failedRetries', steamId)) || 0);
+              if (hasFailed && retries < 2) {
+                // Não avança: mantém pendingShareCodes p/ retry no próximo run.
+                await setStoreValue('failedRetries', steamId, String(retries + 1));
+                logger.warn(
+                  {
+                    steamId,
+                    failed: ownedIds.filter((id) => failedMatches.has(id)),
+                    retries: retries + 1,
+                  },
+                  'Checkpoint SKIPPED — downloads falharam, retry no próximo run',
+                );
+              } else {
+                if (hasFailed) {
+                  logger.error(
+                    {
+                      steamId,
+                      failed: ownedIds.filter((id) => failedMatches.has(id)),
+                    },
+                    'Forcing checkpoint past failed downloads after 3 retries — recover via demo-log.csv URLs',
+                  );
+                }
                 await setStoreValue('lastShareCode', last.steamId, last.shareCode);
+                await setStoreValue('failedRetries', steamId, '0');
                 await setStoreArrayValue('pendingShareCodes', last.steamId, []);
                 logger.info(
                   { steamId, shareCode: last.shareCode },

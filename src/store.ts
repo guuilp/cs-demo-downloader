@@ -9,6 +9,10 @@ export interface Store {
   refreshToken: Record<string, string>;
   lastShareCode: Record<string, string>;
   pendingShareCodes: Record<string, string[]>;
+  // PATCH (fix checkpoint): contador de runs consecutivas em que um usuário
+  // teve download falho e o checkpoint foi pulado. Após 3, força o checkpoint
+  // com ERROR (demo permanentemente morta, ex: 502) pra não travar o pipeline.
+  failedRetries: Record<string, number>;
 }
 
 const configDir = process.env['CONFIG_DIR'] || 'config';
@@ -46,6 +50,7 @@ export const readStore = async (): Promise<Store> => {
     refreshToken: {},
     lastShareCode: {},
     pendingShareCodes: {},
+    failedRetries: {},
   };
 };
 

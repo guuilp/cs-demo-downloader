@@ -39,12 +39,13 @@ export const downloadSaveDemo = async (match: DownloadableMatch): Promise<bigint
   // throttla com ETIMEDOUT quando recebe muitos requests em rajada; com
   // timeout de 120s + retries espaçados, um download falho tem 2ª/3ª chance.
   const MAX_ATTEMPTS = 3;
+  let tempFilename: string | undefined; // PATCH: declarado fora p/ limpeza no catch
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       if (!match.url) throw new Error('Match download URL missing');
 
       await fsx.mkdirp(tempDemosDir);
-      const tempFilename = path.join(tempDemosDir, gcpdUrlToFilename(match.url, match.type));
+      tempFilename = path.join(tempDemosDir, gcpdUrlToFilename(match.url, match.type));
 
       await fsx.mkdirp(demosDir); // redundant, but added in-case the temp directory is changed in the future to not be nested within the demos directory
       const completedFilename = path.join(demosDir, gcpdUrlToFilename(match.url, match.type));
@@ -76,6 +77,13 @@ export const downloadSaveDemo = async (match: DownloadableMatch): Promise<bigint
       // (ex: 502 — demo expirada do replay server da Valve) NÃO são
       // retryáveis: o servidor respondeu e o resultado não muda. Retryar
       // 502 só fazia o downloader gastar ~15s/demo em demos mortas do backfill.
+      // PATCH (temp/ limpo): se o download falhou a meio, remove o arquivo
+      // parcial de temp/ — senão o parser apaga depois de 1h como "abandonado",
+      // e o .dem nunca chega ao root (ver fix do checkpoint no steam-gc.ts).
+      // Fire-and-forget (sem await) p/ não adicionar no-await-in-loop.
+      if (tempFilename) {
+        fsx.remove(tempFilename).catch(() => {});
+      }
       const hasHttpResponse = (err as { response?: unknown }).response !== undefined;
       if (hasHttpResponse || attempt >= MAX_ATTEMPTS) {
         L.error(
